@@ -14,6 +14,7 @@ library(UpSetR)
 # identify plruipotency types for comparisons
 com_types <- c("naive", "primed")
 
+
 ### Human ###
 species <- "human"
 sampleinfo_human <- read.table("./04.16_v1/v1_sampleinfo_human.txt", header = T)
@@ -40,7 +41,6 @@ png("MA_plot_before_shrinkage_n_p_human.png", res = 300, width = 1400, height = 
 plotMA(dds_norm_human)
 dev.off()
 
-plotMA(dds_norm_human)
 # get result
 contrast = c("condition_human", "human_primed", "human_naive")
 resIHW_human <- results(dds_norm_human, contrast = contrast, filterFun=ihw)
@@ -69,7 +69,6 @@ png("MA_plot_shrinkage_n_p_human.png", res = 300, width = 1400, height = 1400)
 plotMA(resLFC_human)
 dev.off()
 
-plotMA(resLFC_human)
 # go analysis
 ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
 symbol  <- getBM(attributes = c('ensembl_gene_id', 'external_gene_name'),
@@ -141,6 +140,7 @@ write.csv(pathway_down_human, "human_pathway_n_p_down.csv")
 go_down_human <- pathway_down_human[which(pathway_down_human$source=="GO:BP"),]
 write.csv(go_down_human, "human_go_n_p_down.csv")
 
+       
 ### Mouse ###
 species <- "mouse"
 sampleinfo_mouse <- read.table("./04.16_v1/v1_sampleinfo_mouse.txt", header = T)
@@ -166,10 +166,6 @@ png("MA_plot_before_shrinkage_n_p_mouse.png", res = 300, width = 1400, height = 
 plotMA(dds_norm_mouse)
 dev.off()
 
-plotMA(dds_norm_mouse)
-```
-
-```{r}
 # get result
 contrast = c("condition_mouse", "mouse_primed", "mouse_naive")
 resIHW_mouse <- results(dds_norm_mouse, contrast = contrast, filterFun=ihw)
@@ -266,6 +262,7 @@ write.csv(pathway_down_mouse, "mouse_pathway_n_p_down.csv")
 go_down_mouse <- pathway_down_mouse[which(pathway_down_mouse$source=="GO:BP"),]
 write.csv(go_down_mouse, "mouse_go_n_p_down.csv")
 
+                                     
 ### Pig ###
 species <- "pig"
 sampleinfo_pig <- read.table("./04.16_v1/v1_sampleinfo_pig.txt", header = T)
@@ -386,6 +383,7 @@ write.csv(pathway_down_pig, "pig_pathway_n_p_down.csv")
 go_down_pig <- pathway_down_pig[which(pathway_down_pig$source=="GO:BP"),]
 write.csv(go_down_pig, "pig_go_n_p_down.csv")
 
+                                   
 ### Marmoset ###
 species <- "marmoset"
 sampleinfo_marmoset <- read.table("./04.16_v1/v1_sampleinfo_marmoset.txt", header = T)
