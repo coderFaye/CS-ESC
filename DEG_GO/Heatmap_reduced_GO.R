@@ -1,5 +1,6 @@
 setwd("/Users/yf358/Desktop/PR1/round4/Figure2")
 load("n_p_deg.rds")
+
 # merging go terms (down)
 human_go <- data.frame(ID = go_down_human$term_id, 
                        Description = go_down_human$term_name,
@@ -60,8 +61,7 @@ if (all(filtered_go_terms_up1[, 3:7] > 0)) {
 } else {
   stop("All values must be positive to take the logarithm.")
 }
-filtered_go_terms_up1$Description
-filtered_go_terms_up1 <- filtered_go_terms_up1[-c(7,8,9,16,18,19,20,21,47), ]
+
 # draw heatmap
 heatmap_df <- as.matrix(filtered_go_terms_up1[, 3:7])
 colnames(heatmap_df) <- c("human","mouse","pig","marmoset","C.macaque")
@@ -110,8 +110,8 @@ if (all(filtered_go_terms_down1[, 3:7] > 0)) {
 } else {
   stop("All values must be positive to take the logarithm.")
 }
-
 filtered_go_terms_down1$Description
+
 # draw heatmap
 heatmap_df <- as.matrix(filtered_go_terms_down1[, 3:7])
 colnames(heatmap_df) <- c("human","mouse","pig","marmoset","C.macaque")
@@ -155,12 +155,10 @@ dev.off()
 # Reduce go terms
 # BiocManager::install("rrvgo")
 # BiocManager::install("org.Hs.eg.db")
-
 library(rrvgo)
 filtered_go_terms_down_filtered <- filtered_go_terms_down[
   rowSums(filtered_go_terms_down[, 3:7] < 0.05) >= 4, 
 ]
-
 filtered_go_terms_up_filtered <- filtered_go_terms_up[
   rowSums(filtered_go_terms_up[, 3:7] < 0.05) >= 4, 
 ]
