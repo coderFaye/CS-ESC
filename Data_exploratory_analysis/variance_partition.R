@@ -16,6 +16,8 @@ form <- ~ type + species
 varPart <- fitExtractVarPartModel(tpm, form, sampleinfo)
 colnames(varPart)
 colnames(varPart) <- c("Pluripotency", "Species", "Residuals")
+
+
 # figure s1a
 plotVarPart(varPart)
 png("varPart_plot.png", width=1200, height=1000, res = 300)
