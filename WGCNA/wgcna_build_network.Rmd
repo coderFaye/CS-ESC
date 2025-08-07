@@ -1,0 +1,1187 @@
+---
+title: "wgcna_v1"
+author: "yifei"
+date: "2024-08-29"
+output: html_document
+---
+
+* Read in files
+```{r}
+setwd("/Users/yf358/Desktop/PR1/round3/06_wgcna/v1");
+
+library(WGCNA)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readr)
+library(forcats)
+library(circlize)
+allowWGCNAThreads()
+
+
+# read in sampleinfo and tpm values
+sampleinfo <- read.table("v1_sampleinfo.txt", header = T)
+tpm <- read.table("v1_sva_log_tpm.txt", header = T)
+duplicates <- duplicated(tpm$Cow.gene.name)
+tpm <- tpm[!duplicates, ]
+rownames(tpm) <- tpm$Cow.gene.name
+tpm <- tpm[,-c(1:17)]
+
+# Create expression list
+nSets = 6;
+tpm_pig <- tpm[,sampleinfo$species == "pig"]
+tpm_human <- tpm[,sampleinfo$species == "human"]
+tpm_mouse <- tpm[,sampleinfo$species == "mouse"]
+tpm_marmoset <- tpm[,sampleinfo$species == "marmoset"]
+tpm_cattle <- tpm[,sampleinfo$species == "cattle"]
+tpm_rat <- tpm[,sampleinfo$species == "rat"]
+
+# For easier labeling of plots, create a vector holding descriptive names of the two sets.
+setLabels = c("pig", "human", "mouse", "marmoset", "cattle","rat")
+# Form multi-set expression data: columns starting from 9 contain actual expression data.
+multiExpr = vector(mode = "list", length = nSets)
+multiExpr[[1]] = list(data = as.data.frame(t(tpm_pig)));
+rownames(multiExpr[[1]]$data) <- colnames(tpm_pig)
+multiExpr[[2]] = list(data = as.data.frame(t(tpm_human)));
+rownames(multiExpr[[2]]$data) <- colnames(tpm_human)
+multiExpr[[3]] = list(data = as.data.frame(t(tpm_mouse)));
+rownames(multiExpr[[3]]$data) <- colnames(tpm_mouse)
+multiExpr[[4]] = list(data = as.data.frame(t(tpm_marmoset)));
+rownames(multiExpr[[4]]$data) <- colnames(tpm_marmoset)
+multiExpr[[5]] = list(data = as.data.frame(t(tpm_cattle)));
+rownames(multiExpr[[5]]$data) <- colnames(tpm_cattle)
+multiExpr[[6]] = list(data = as.data.frame(t(tpm_rat)));
+rownames(multiExpr[[6]]$data) <- colnames(tpm_rat)
+names(multiExpr) <- setLabels
+# Check that the data has the correct format for many functions operating on multiple sets:
+exprSize = checkSets(multiExpr)
+exprSize
+
+# checking for missing values and outlier samples
+gsg = goodSamplesGenesMS(multiExpr, verbose = 3);
+gsg$allOK
+# check any outlier samples
+if (!gsg$allOK)
+{
+  # Print information about the removed genes:
+  if (sum(!gsg$goodGenes) > 0)
+    printFlush(paste("Removing genes:", paste(names(multiExpr[[1]]$data)[!gsg$goodGenes], 
+                                              collapse = ", ")))
+  for (set in 1:exprSize$nSets)
+  {
+    if (sum(!gsg$goodSamples[[set]]))
+      printFlush(paste("In set", setLabels[set], "removing samples",
+                       paste(rownames(multiExpr[[set]]$data)[!gsg$goodSamples[[set]]], collapse = ", ")))
+    # Remove the offending genes and samples
+    multiExpr[[set]]$data = multiExpr[[set]]$data[gsg$goodSamples[[set]], gsg$goodGenes];
+  }
+  # Update exprSize
+  exprSize = checkSets(multiExpr)
+}
+sampleTrees = list()
+for (set in 1:nSets)
+{
+  sampleTrees[[set]] = hclust(dist(multiExpr[[set]]$data), method = "average")
+}
+# draw cluster plot for all female and male samples
+pdf(file = "Plots_SampleClustering.pdf", width = 12, height = 12);
+par(mfrow=c(2,1))
+par(mar = c(0, 4, 2, 0))
+for (set in 1:nSets)
+  plot(sampleTrees[[set]], main = paste("Sample clustering on all genes in", setLabels[set]),
+       xlab="", sub="", cex = 0.7);
+dev.off();
+
+# create trait list
+allTraits = sampleinfo[,c(2,5)]
+allTraits$type <- ifelse(grepl("ex", allTraits$type), "expanded/extended", allTraits$type)
+# transfering each of the cell type to numeric variable
+allTraits <- allTraits %>%
+  mutate(value = 1) %>% 
+  pivot_wider(names_from = type, values_from = value, values_fill = list(value = 0))
+# Form a multi-set structure that will hold the clinical traits.
+Traits = vector(mode="list", length = nSets);
+for (set in 1:nSets)
+{
+  setSamples = rownames(multiExpr[[set]]$data);
+  traitRows = match(setSamples, allTraits$name);
+  Traits[[set]] = list(data = allTraits[traitRows, -1]);
+  rownames(Traits[[set]]$data) = allTraits[traitRows, 1][[1]];
+  # Adjust the column order
+  Traits[[set]]$data <- Traits[[set]]$data %>%
+    dplyr::select("expanded/extended", "naïve", "formative", "primed")
+}
+collectGarbage();
+
+```
+
+* Create netwroks for different species: PIG
+```{r}
+set <- 1
+species <- "pig"
+expr_normalized <- multiExpr[[set]]$data
+dim(expr_normalized)
+expr_normalized_df <- data.frame(t(expr_normalized)) %>%
+  mutate(
+    Gene_id = row.names(t(expr_normalized))
+  ) %>%
+  pivot_longer(-Gene_id)
+expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized and 95 quantile Expression",
+    x = "treatment",
+    y = "normalized expression"
+  )
+
+
+# pick soft threshold
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+sft = pickSoftThreshold(
+  expr_normalized,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+)
+pdf("threshold_pig.pdf", width = 10, height = 6)
+par(mfrow = c(1,2));
+cex1 = 1.0;
+plot(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.80, col = "red")
+plot(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)",
+     ylab = "Mean Connectivity",
+     type = "n",
+     main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     labels = powers,
+     cex = cex1, col = "red")
+dev.off()
+
+# setting soft threshold
+picked_power = 14
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+netwk_pig <- blockwiseModules(expr_normalized,                # <= input here
+                              # == Adjacency Function ==
+                              power = picked_power,                # <= power here
+                              networkType = "signed",
+                              # == Tree and Block Options ==
+                              deepSplit = 2,
+                              pamRespectsDendro = F,
+                              # detectCutHeight = 0.75,
+                              minModuleSize = 30,
+                              # == Module Adjustments ==
+                              reassignThreshold = 0,
+                              mergeCutHeight = 0.25,
+                              # == TOM == Archive the run results in TOM file (saves time)
+                              saveTOMs = T,
+                              saveTOMFileBase = "ER",
+                              # == Output Options
+                              numericLabels = T,
+                              verbose = 3)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk_pig$colors)
+
+
+# Plot the dendrogram and the module colors underneath
+pdf("dendrogram_pig.pdf", width = 10, height = 6)
+plotDendroAndColors(
+  netwk_pig$dendrograms[[1]],
+  mergedColors[netwk_pig$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+dev.off()
+
+
+# write down genes in each module
+module_df <- data.frame(
+  gene_id = names(netwk_pig$colors),
+  colors = labels2colors(netwk_pig$colors)
+)
+module_df[1:5,]
+write_delim(module_df,
+            file = "gene_modules_pig.txt",
+            delim = "\t")
+
+
+# Draw the bar plot for number of genes in each module ?? not finished?
+moduleCounts <- table(module_df$colors)
+moduleCounts_df <- as.data.frame(moduleCounts)
+colnames(moduleCounts_df) <- c("Module", "GeneCount")
+ggplot(moduleCounts_df, aes(x = reorder(Module, -GeneCount), y = GeneCount, fill = Module)) +
+  geom_bar(stat = "identity") +
+  theme_minimal(base_size = 15) +
+  labs(title = "Number of Genes in Each Module",
+       x = "Module",
+       y = "Number of Genes") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, color = "black", size = 12),
+    axis.text.y = element_text(color = "black", size = 12),
+    axis.title.x = element_text(face = "bold", size = 14),
+    axis.title.y = element_text(face = "bold", size = 14),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray80"),
+    panel.grid.minor = element_line(color = "gray90"),
+    panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  scale_fill_manual(values = scales::hue_pal()(length(unique(moduleCounts_df$Module))))
+ggsave("module_gene_counts_pig.pdf", width = 10, height = 6)
+
+
+# create plot of module-trait correlations
+moduleColors=mergedColors
+if(T){ 
+  nGenes = ncol(expr_normalized)  # 基因数目
+  nSamples = nrow(expr_normalized)  # 样本数目
+  MES0 <- moduleEigengenes(expr_normalized,moduleColors)$eigengenes  # 计算模块特征向量
+  MEs = orderMEs(MES0)  # 对模块特征向量排序
+  moduleTraitCor <- cor(MEs, Traits[[set]]$data, use = "p")  # 计算模块特征向量与表型的相关系数矩阵
+  moduleTraitPvalue <- corPvalueStudent(moduleTraitCor,nSamples)  # 计算相关系数矩阵的p值
+  textMatrix = paste(signif(moduleTraitCor,2),"\n(",
+                     signif(moduleTraitPvalue,1),")",sep = "")  # 构建绘图时用的文本矩阵
+  dim(textMatrix)=dim(moduleTraitCor)  # 修改文本矩阵的维度，与相关系数矩阵相同
+
+  # Open a PNG file to save the plot
+  pdf("module-trait-relationships_pig.pdf", width = 10, height = 10)
+  par(mar = c(8, 10, 4, 2))  # 设置边距
+  labeledHeatmap(Matrix = moduleTraitCor,  # 绘制带标签的热图
+                 xLabels = names(Traits[[set]]$data),  # x轴标签
+                 yLabels =  names(MEs),  # y轴标签
+                 ySymbols = names(MEs),  # y轴符号
+                 colorLabels = FALSE,  # 不显示颜色标签
+                 colors = blueWhiteRed(50),  # 颜色范围
+                 textMatrix = textMatrix,  # 显示文本矩阵
+                 setStdMargins = FALSE,  # 不设置标准边距
+                 cex.text = 0.8,  # 文本大小
+                 zlim = c(-1,1),  # 颜色映射范围
+                 main = paste("Module-trait relationships:",species))  # 绘图标题
+  # Close the PNG file
+  dev.off()
+}
+```
+```{r}
+connectivity_pig <- softConnectivity(
+  expr_normalized, 
+  corFnc = "cor", corOptions = "use = 'p'", 
+  weights = NULL,
+  type = "signed",
+  power = 14)
+names(connectivity_pig) <- colnames(expr_normalized)
+save(connectivity_pig, file = "connectivity_pig.rdata")
+```
+
+* Create netwroks for different species: HUMAN
+```{r}
+set <- 2
+species <- "human"
+expr_normalized <- multiExpr[[set]]$data
+dim(expr_normalized)
+expr_normalized_df <- data.frame(t(expr_normalized)) %>%
+  mutate(
+    Gene_id = row.names(t(expr_normalized))
+  ) %>%
+  pivot_longer(-Gene_id)
+expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized and 95 quantile Expression",
+    x = "treatment",
+    y = "normalized expression"
+  )
+
+# pick soft threshold
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+sft = pickSoftThreshold(
+  expr_normalized,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+)
+pdf("threshold_human.pdf", width = 10, height = 6)
+par(mfrow = c(1,2));
+cex1 = 1.0;
+plot(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.80, col = "red")
+plot(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)",
+     ylab = "Mean Connectivity",
+     type = "n",
+     main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     labels = powers,
+     cex = cex1, col = "red")
+dev.off()
+
+# setting soft threshold
+picked_power = 10
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+netwk_human <- blockwiseModules(expr_normalized,                # <= input here
+                              # == Adjacency Function ==
+                              power = picked_power,                # <= power here
+                              networkType = "signed",
+                              # == Tree and Block Options ==
+                              deepSplit = 2,
+                              pamRespectsDendro = F,
+                              # detectCutHeight = 0.75,
+                              minModuleSize = 30,
+                              # == Module Adjustments ==
+                              reassignThreshold = 0,
+                              mergeCutHeight = 0.25,
+                              # == TOM == Archive the run results in TOM file (saves time)
+                              saveTOMs = T,
+                              saveTOMFileBase = "ER",
+                              # == Output Options
+                              numericLabels = T,
+                              verbose = 3)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk_human$colors)
+mergedColors_human = mergedColors = labels2colors(netwk_human$colors)
+
+# Plot the dendrogram and the module colors underneath
+pdf("dendrogram_human.pdf", width = 10, height = 6)
+plotDendroAndColors(
+  netwk_human$dendrograms[[1]],
+  mergedColors[netwk_human$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+dev.off()
+
+
+# write down genes in each module
+module_df <- data.frame(
+  gene_id = names(netwk_human$colors),
+  colors = labels2colors(netwk_human$colors)
+)
+module_df[1:5,]
+write_delim(module_df,
+            file = "gene_modules_human.txt",
+            delim = "\t")
+
+
+# Draw the bar plot for number of genes in each module ?? not finished?
+moduleCounts <- table(module_df$colors)
+moduleCounts_df <- as.data.frame(moduleCounts)
+colnames(moduleCounts_df) <- c("Module", "GeneCount")
+ggplot(moduleCounts_df, aes(x = reorder(Module, -GeneCount), y = GeneCount, fill = Module)) +
+  geom_bar(stat = "identity") +
+  theme_minimal(base_size = 15) +
+  labs(title = "Number of Genes in Each Module",
+       x = "Module",
+       y = "Number of Genes") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, color = "black", size = 12),
+    axis.text.y = element_text(color = "black", size = 12),
+    axis.title.x = element_text(face = "bold", size = 14),
+    axis.title.y = element_text(face = "bold", size = 14),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray80"),
+    panel.grid.minor = element_line(color = "gray90"),
+    panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  scale_fill_manual(values = scales::hue_pal()(length(unique(moduleCounts_df$Module))))
+ggsave("module_gene_counts_human.pdf", width = 10, height = 6)
+
+
+# create plot of module-trait correlations
+moduleColors=mergedColors
+if(T){ 
+  nGenes = ncol(expr_normalized)  # 基因数目
+  nSamples = nrow(expr_normalized)  # 样本数目
+  MES0 <- moduleEigengenes(expr_normalized,moduleColors)$eigengenes  # 计算模块特征向量
+  MEs = orderMEs(MES0)  # 对模块特征向量排序
+  moduleTraitCor <- cor(MEs, Traits[[set]]$data, use = "p")  # 计算模块特征向量与表型的相关系数矩阵
+  moduleTraitPvalue <- corPvalueStudent(moduleTraitCor,nSamples)  # 计算相关系数矩阵的p值
+  textMatrix = paste(signif(moduleTraitCor,2),"\n(",
+                     signif(moduleTraitPvalue,1),")",sep = "")  # 构建绘图时用的文本矩阵
+  dim(textMatrix)=dim(moduleTraitCor)  # 修改文本矩阵的维度，与相关系数矩阵相同
+  
+  # Open a PNG file to save the plot
+  pdf("module-trait-relationships_human.pdf", width = 15, height = 15)
+  par(mar = c(8, 10, 4, 2))  # 设置边距
+  labeledHeatmap(Matrix = moduleTraitCor,  # 绘制带标签的热图
+                 xLabels = names(Traits[[set]]$data),  # x轴标签
+                 yLabels =  names(MEs),  # y轴标签
+                 ySymbols = names(MEs),  # y轴符号
+                 colorLabels = FALSE,  # 不显示颜色标签
+                 colors = blueWhiteRed(50),  # 颜色范围
+                 textMatrix = textMatrix,  # 显示文本矩阵
+                 setStdMargins = FALSE,  # 不设置标准边距
+                 cex.text = 0.8,  # 文本大小
+                 zlim = c(-1,1),  # 颜色映射范围
+                 main = paste("Module-trait relationships:",species))  # 绘图标题
+  # Close the PNG file
+  dev.off()
+}
+```
+
+```{r}
+connectivity_human <- softConnectivity(
+  expr_normalized, 
+  corFnc = "cor", corOptions = "use = 'p'", 
+  weights = NULL,
+  type = "signed",
+  power = 10)
+names(connectivity_human) <- colnames(expr_normalized)
+save(connectivity_human, file = "connectivity_human.rdata")
+```
+
+
+* Create netwroks for different species: MOUSE
+```{r}
+set <- 3
+species <- "mouse"
+expr_normalized <- multiExpr[[set]]$data
+dim(expr_normalized)
+expr_normalized_df <- data.frame(t(expr_normalized)) %>%
+  mutate(
+    Gene_id = row.names(t(expr_normalized))
+  ) %>%
+  pivot_longer(-Gene_id)
+expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized and 95 quantile Expression",
+    x = "treatment",
+    y = "normalized expression"
+  )
+
+
+# pick soft threshold
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+sft = pickSoftThreshold(
+  expr_normalized,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+)
+pdf("threshold_mouse.pdf", width = 10, height = 6)
+par(mfrow = c(1,2));
+cex1 = 1.0;
+plot(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.80, col = "red")
+plot(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)",
+     ylab = "Mean Connectivity",
+     type = "n",
+     main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     labels = powers,
+     cex = cex1, col = "red")
+dev.off()
+
+# setting soft threshold
+picked_power = 8
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+netwk_mouse <- blockwiseModules(expr_normalized,                # <= input here
+                                # == Adjacency Function ==
+                                power = picked_power,                # <= power here
+                                networkType = "signed",
+                                # == Tree and Block Options ==
+                                deepSplit = 2,
+                                pamRespectsDendro = F,
+                                # detectCutHeight = 0.75,
+                                minModuleSize = 30,
+                                # == Module Adjustments ==
+                                reassignThreshold = 0,
+                                mergeCutHeight = 0.25,
+                                # == TOM == Archive the run results in TOM file (saves time)
+                                saveTOMs = T,
+                                saveTOMFileBase = "ER",
+                                # == Output Options
+                                numericLabels = T,
+                                verbose = 3)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk_mouse$colors)
+
+
+# Plot the dendrogram and the module colors underneath
+pdf("dendrogram_mouse.pdf", width = 10, height = 6)
+plotDendroAndColors(
+  netwk_mouse$dendrograms[[1]],
+  mergedColors[netwk_mouse$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+dev.off()
+
+
+# write down genes in each module
+module_df <- data.frame(
+  gene_id = names(netwk_mouse$colors),
+  colors = labels2colors(netwk_mouse$colors)
+)
+module_df[1:5,]
+write_delim(module_df,
+            file = "gene_modules_mouse.txt",
+            delim = "\t")
+
+
+# Draw the bar plot for number of genes in each module ?? not finished?
+moduleCounts <- table(module_df$colors)
+moduleCounts_df <- as.data.frame(moduleCounts)
+colnames(moduleCounts_df) <- c("Module", "GeneCount")
+ggplot(moduleCounts_df, aes(x = reorder(Module, -GeneCount), y = GeneCount, fill = Module)) +
+  geom_bar(stat = "identity") +
+  theme_minimal(base_size = 15) +
+  labs(title = "Number of Genes in Each Module",
+       x = "Module",
+       y = "Number of Genes") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, color = "black", size = 12),
+    axis.text.y = element_text(color = "black", size = 12),
+    axis.title.x = element_text(face = "bold", size = 14),
+    axis.title.y = element_text(face = "bold", size = 14),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray80"),
+    panel.grid.minor = element_line(color = "gray90"),
+    panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  scale_fill_manual(values = scales::hue_pal()(length(unique(moduleCounts_df$Module))))
+ggsave("module_gene_counts_mouse.pdf", width = 10, height = 6)
+
+
+# create plot of module-trait correlations
+moduleColors=mergedColors
+if(T){ 
+  nGenes = ncol(expr_normalized)  # 基因数目
+  nSamples = nrow(expr_normalized)  # 样本数目
+  MES0 <- moduleEigengenes(expr_normalized,moduleColors)$eigengenes  # 计算模块特征向量
+  MEs = orderMEs(MES0)  # 对模块特征向量排序
+  moduleTraitCor <- cor(MEs, Traits[[set]]$data, use = "p")  # 计算模块特征向量与表型的相关系数矩阵
+  moduleTraitPvalue <- corPvalueStudent(moduleTraitCor,nSamples)  # 计算相关系数矩阵的p值
+  textMatrix = paste(signif(moduleTraitCor,2),"\n(",
+                     signif(moduleTraitPvalue,1),")",sep = "")  # 构建绘图时用的文本矩阵
+  dim(textMatrix)=dim(moduleTraitCor)  # 修改文本矩阵的维度，与相关系数矩阵相同
+  
+  # Open a PNG file to save the plot
+  pdf("module-trait-relationships_mouse.pdf", width = 15, height = 15)
+  par(mar = c(8, 10, 4, 2))  # 设置边距
+  labeledHeatmap(Matrix = moduleTraitCor,  # 绘制带标签的热图
+                 xLabels = names(Traits[[set]]$data),  # x轴标签
+                 yLabels =  names(MEs),  # y轴标签
+                 ySymbols = names(MEs),  # y轴符号
+                 colorLabels = FALSE,  # 不显示颜色标签
+                 colors = blueWhiteRed(50),  # 颜色范围
+                 textMatrix = textMatrix,  # 显示文本矩阵
+                 setStdMargins = FALSE,  # 不设置标准边距
+                 cex.text = 0.8,  # 文本大小
+                 zlim = c(-1,1),  # 颜色映射范围
+                 main = paste("Module-trait relationships:",species))  # 绘图标题
+  # Close the PNG file
+  dev.off()
+}
+```
+
+```{r}
+connectivity_mouse <- softConnectivity(
+  expr_normalized, 
+  corFnc = "cor", corOptions = "use = 'p'", 
+  weights = NULL,
+  type = "signed",
+  power = 8)
+names(connectivity_mouse) <- colnames(expr_normalized)
+save(connectivity_mouse, file = "connectivity_mouse.rdata")
+```
+
+
+* Create netwroks for different species: MARMOSET
+```{r}
+set <- 4
+species <- "marmoset"
+expr_normalized <- multiExpr[[set]]$data
+dim(expr_normalized)
+expr_normalized_df <- data.frame(t(expr_normalized)) %>%
+  mutate(
+    Gene_id = row.names(t(expr_normalized))
+  ) %>%
+  pivot_longer(-Gene_id)
+expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized and 95 quantile Expression",
+    x = "treatment",
+    y = "normalized expression"
+  )
+
+
+# pick soft threshold
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+sft = pickSoftThreshold(
+  expr_normalized,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+)
+pdf("threshold_marmoset.pdf", width = 10, height = 6)
+par(mfrow = c(1,2));
+cex1 = 1.0;
+plot(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.80, col = "red")
+plot(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)",
+     ylab = "Mean Connectivity",
+     type = "n",
+     main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     labels = powers,
+     cex = cex1, col = "red")
+dev.off()
+
+# setting soft threshold
+picked_power = 8
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+netwk_marmoset <- blockwiseModules(expr_normalized,                # <= input here
+                                # == Adjacency Function ==
+                                power = picked_power,                # <= power here
+                                networkType = "signed",
+                                # == Tree and Block Options ==
+                                deepSplit = 2,
+                                pamRespectsDendro = F,
+                                # detectCutHeight = 0.75,
+                                minModuleSize = 30,
+                                # == Module Adjustments ==
+                                reassignThreshold = 0,
+                                mergeCutHeight = 0.25,
+                                # == TOM == Archive the run results in TOM file (saves time)
+                                saveTOMs = T,
+                                saveTOMFileBase = "ER",
+                                # == Output Options
+                                numericLabels = T,
+                                verbose = 3)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk_marmoset$colors)
+
+
+# Plot the dendrogram and the module colors underneath
+pdf("dendrogram_marmoset.pdf", width = 10, height = 6)
+plotDendroAndColors(
+  netwk_marmoset$dendrograms[[1]],
+  mergedColors[netwk_marmoset$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+dev.off()
+
+
+# write down genes in each module
+module_df <- data.frame(
+  gene_id = names(netwk_marmoset$colors),
+  colors = labels2colors(netwk_marmoset$colors)
+)
+module_df[1:5,]
+write_delim(module_df,
+            file = "gene_modules_marmoset.txt",
+            delim = "\t")
+
+
+# Draw the bar plot for number of genes in each module ?? not finished?
+moduleCounts <- table(module_df$colors)
+moduleCounts_df <- as.data.frame(moduleCounts)
+
+colnames(moduleCounts_df) <- c("Module", "GeneCount")
+ggplot(moduleCounts_df, aes(x = reorder(Module, -GeneCount), y = GeneCount, fill = Module)) +
+  geom_bar(stat = "identity") +
+  theme_minimal(base_size = 15) +
+  labs(title = "Number of Genes in Each Module",
+       x = "Module",
+       y = "Number of Genes") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, color = "black", size = 12),
+    axis.text.y = element_text(color = "black", size = 12),
+    axis.title.x = element_text(face = "bold", size = 14),
+    axis.title.y = element_text(face = "bold", size = 14),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray80"),
+    panel.grid.minor = element_line(color = "gray90"),
+    panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  scale_fill_manual(values = scales::hue_pal()(length(unique(moduleCounts_df$Module))))
+ggsave("module_gene_counts_marmoset.pdf", width = 10, height = 6)
+
+
+# create plot of module-trait correlations
+moduleColors=mergedColors
+if(T){ 
+  nGenes = ncol(expr_normalized)  # 基因数目
+  nSamples = nrow(expr_normalized)  # 样本数目
+  MES0 <- moduleEigengenes(expr_normalized,moduleColors)$eigengenes  # 计算模块特征向量
+  MEs = orderMEs(MES0)  # 对模块特征向量排序
+  moduleTraitCor <- cor(MEs, Traits[[set]]$data, use = "p")  # 计算模块特征向量与表型的相关系数矩阵
+  moduleTraitPvalue <- corPvalueStudent(moduleTraitCor,nSamples)  # 计算相关系数矩阵的p值
+  textMatrix = paste(signif(moduleTraitCor,2),"\n(",
+                     signif(moduleTraitPvalue,1),")",sep = "")  # 构建绘图时用的文本矩阵
+  dim(textMatrix)=dim(moduleTraitCor)  # 修改文本矩阵的维度，与相关系数矩阵相同
+  
+  # Open a PNG file to save the plot
+  pdf("module-trait-relationships_marmoset.pdf", width = 15, height = 15)
+  par(mar = c(8, 10, 4, 2))  # 设置边距
+  labeledHeatmap(Matrix = moduleTraitCor,  # 绘制带标签的热图
+                 xLabels = names(Traits[[set]]$data),  # x轴标签
+                 yLabels =  names(MEs),  # y轴标签
+                 ySymbols = names(MEs),  # y轴符号
+                 colorLabels = FALSE,  # 不显示颜色标签
+                 colors = blueWhiteRed(50),  # 颜色范围
+                 textMatrix = textMatrix,  # 显示文本矩阵
+                 setStdMargins = FALSE,  # 不设置标准边距
+                 cex.text = 0.8,  # 文本大小
+                 zlim = c(-1,1),  # 颜色映射范围
+                 main = paste("Module-trait relationships:",species))  # 绘图标题
+  # Close the PNG file
+  dev.off()
+}
+```
+
+```{r}
+connectivity_marmoset <- softConnectivity(
+  expr_normalized, 
+  corFnc = "cor", corOptions = "use = 'p'", 
+  weights = NULL,
+  type = "signed",
+  power = 8)
+names(connectivity_marmoset) <- colnames(expr_normalized)
+save(connectivity_marmoset, file = "connectivity_marmoset.rdata")
+```
+
+* Create netwroks for different species: CATTLE
+```{r}
+set <- 5
+species <- "cattle"
+expr_normalized <- multiExpr[[set]]$data
+dim(expr_normalized)
+expr_normalized_df <- data.frame(t(expr_normalized)) %>%
+  mutate(
+    Gene_id = row.names(t(expr_normalized))
+  ) %>%
+  pivot_longer(-Gene_id)
+expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized and 95 quantile Expression",
+    x = "treatment",
+    y = "normalized expression"
+  )
+
+
+# pick soft threshold
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+sft = pickSoftThreshold(
+  expr_normalized,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+)
+pdf("threshold_cattle.pdf", width = 10, height = 6)
+par(mfrow = c(1,2));
+cex1 = 1.0;
+plot(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.80, col = "red")
+plot(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)",
+     ylab = "Mean Connectivity",
+     type = "n",
+     main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     labels = powers,
+     cex = cex1, col = "red")
+dev.off()
+
+# setting soft threshold
+picked_power = 16
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+netwk_cattle <- blockwiseModules(expr_normalized,                # <= input here
+                                   # == Adjacency Function ==
+                                   power = picked_power,                # <= power here
+                                   networkType = "signed",
+                                   # == Tree and Block Options ==
+                                   deepSplit = 2,
+                                   pamRespectsDendro = F,
+                                   # detectCutHeight = 0.75,
+                                   minModuleSize = 30,
+                                   # == Module Adjustments ==
+                                   reassignThreshold = 0,
+                                   mergeCutHeight = 0.25,
+                                   # == TOM == Archive the run results in TOM file (saves time)
+                                   saveTOMs = T,
+                                   saveTOMFileBase = "ER",
+                                   # == Output Options
+                                   numericLabels = T,
+                                   verbose = 3)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk_cattle$colors)
+
+
+# Plot the dendrogram and the module colors underneath
+pdf("dendrogram_cattle.pdf", width = 10, height = 6)
+plotDendroAndColors(
+  netwk_cattle$dendrograms[[1]],
+  mergedColors[netwk_cattle$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+dev.off()
+
+
+# write down genes in each module
+module_df <- data.frame(
+  gene_id = names(netwk_cattle$colors),
+  colors = labels2colors(netwk_cattle$colors)
+)
+module_df[1:5,]
+write_delim(module_df,
+            file = "gene_modules_cattle.txt",
+            delim = "\t")
+
+
+# Draw the bar plot for number of genes in each module ?? not finished?
+moduleCounts <- table(module_df$colors)
+moduleCounts_df <- as.data.frame(moduleCounts)
+
+colnames(moduleCounts_df) <- c("Module", "GeneCount")
+ggplot(moduleCounts_df, aes(x = reorder(Module, -GeneCount), y = GeneCount, fill = Module)) +
+  geom_bar(stat = "identity") +
+  theme_minimal(base_size = 15) +
+  labs(title = "Number of Genes in Each Module",
+       x = "Module",
+       y = "Number of Genes") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, color = "black", size = 12),
+    axis.text.y = element_text(color = "black", size = 12),
+    axis.title.x = element_text(face = "bold", size = 14),
+    axis.title.y = element_text(face = "bold", size = 14),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray80"),
+    panel.grid.minor = element_line(color = "gray90"),
+    panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  scale_fill_manual(values = scales::hue_pal()(length(unique(moduleCounts_df$Module))))
+ggsave("module_gene_counts_cattle.pdf", width = 10, height = 6)
+
+
+# create plot of module-trait correlations
+moduleColors=mergedColors
+if(T){ 
+  nGenes = ncol(expr_normalized)  # 基因数目
+  nSamples = nrow(expr_normalized)  # 样本数目
+  MES0 <- moduleEigengenes(expr_normalized,moduleColors)$eigengenes  # 计算模块特征向量
+  MEs = orderMEs(MES0)  # 对模块特征向量排序
+  moduleTraitCor <- cor(MEs, Traits[[set]]$data, use = "p")  # 计算模块特征向量与表型的相关系数矩阵
+  moduleTraitPvalue <- corPvalueStudent(moduleTraitCor,nSamples)  # 计算相关系数矩阵的p值
+  textMatrix = paste(signif(moduleTraitCor,2),"\n(",
+                     signif(moduleTraitPvalue,1),")",sep = "")  # 构建绘图时用的文本矩阵
+  dim(textMatrix)=dim(moduleTraitCor)  # 修改文本矩阵的维度，与相关系数矩阵相同
+  
+  # Open a PNG file to save the plot
+  pdf("module-trait-relationships_cattle.pdf", width = 15, height = 15)
+  par(mar = c(8, 10, 4, 2))  # 设置边距
+  labeledHeatmap(Matrix = moduleTraitCor,  # 绘制带标签的热图
+                 xLabels = names(Traits[[set]]$data),  # x轴标签
+                 yLabels =  names(MEs),  # y轴标签
+                 ySymbols = names(MEs),  # y轴符号
+                 colorLabels = FALSE,  # 不显示颜色标签
+                 colors = blueWhiteRed(50),  # 颜色范围
+                 textMatrix = textMatrix,  # 显示文本矩阵
+                 setStdMargins = FALSE,  # 不设置标准边距
+                 cex.text = 0.8,  # 文本大小
+                 zlim = c(-1,1),  # 颜色映射范围
+                 main = paste("Module-trait relationships:",species))  # 绘图标题
+  # Close the PNG file
+  dev.off()
+}
+
+```
+
+```{r}
+connectivity_cattle <- softConnectivity(
+  expr_normalized, 
+  corFnc = "cor", corOptions = "use = 'p'", 
+  weights = NULL,
+  type = "signed",
+  power = 16)
+names(connectivity_cattle) <- colnames(expr_normalized)
+save(connectivity_cattle, file = "connectivity_cattle.rdata")
+```
+
+
+* Create netwroks for different species: RAT
+```{r}
+set <- 6
+species <- "rat"
+expr_normalized <- multiExpr[[set]]$data
+dim(expr_normalized)
+expr_normalized_df <- data.frame(t(expr_normalized)) %>%
+  mutate(
+    Gene_id = row.names(t(expr_normalized))
+  ) %>%
+  pivot_longer(-Gene_id)
+expr_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized and 95 quantile Expression",
+    x = "treatment",
+    y = "normalized expression"
+  )
+
+
+# pick soft threshold
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+sft = pickSoftThreshold(
+  expr_normalized,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+)
+pdf("threshold_rat.pdf", width = 10, height = 6)
+par(mfrow = c(1,2));
+cex1 = 1.0;
+plot(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     main = paste("Scale independence")
+)
+text(sft$fitIndices[, 1],
+     -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red"
+)
+abline(h = 0.80, col = "red")
+plot(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)",
+     ylab = "Mean Connectivity",
+     type = "n",
+     main = paste("Mean connectivity")
+)
+text(sft$fitIndices[, 1],
+     sft$fitIndices[, 5],
+     labels = powers,
+     cex = cex1, col = "red")
+dev.off()
+
+# setting soft threshold
+picked_power = 6
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+netwk_rat <- blockwiseModules(expr_normalized,                # <= input here
+                                 # == Adjacency Function ==
+                                 power = picked_power,                # <= power here
+                                 networkType = "signed",
+                                 # == Tree and Block Options ==
+                                 deepSplit = 2,
+                                 pamRespectsDendro = F,
+                                 # detectCutHeight = 0.75,
+                                 minModuleSize = 30,
+                                 # == Module Adjustments ==
+                                 reassignThreshold = 0,
+                                 mergeCutHeight = 0.25,
+                                 # == TOM == Archive the run results in TOM file (saves time)
+                                 saveTOMs = T,
+                                 saveTOMFileBase = "ER",
+                                 # == Output Options
+                                 numericLabels = T,
+                                 verbose = 3)
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk_rat$colors)
+
+
+# Plot the dendrogram and the module colors underneath
+pdf("dendrogram_rat.pdf", width = 10, height = 6)
+plotDendroAndColors(
+  netwk_rat$dendrograms[[1]],
+  mergedColors[netwk_rat$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+dev.off()
+
+
+# write down genes in each module
+module_df <- data.frame(
+  gene_id = names(netwk_rat$colors),
+  colors = labels2colors(netwk_rat$colors)
+)
+module_df[1:5,]
+write_delim(module_df,
+            file = "gene_modules_rat.txt",
+            delim = "\t")
+
+
+# Draw the bar plot for number of genes in each module ?? not finished?
+moduleCounts <- table(module_df$colors)
+moduleCounts_df <- as.data.frame(moduleCounts)
+colnames(moduleCounts_df) <- c("Module", "GeneCount")
+ggplot(moduleCounts_df, aes(x = reorder(Module, -GeneCount), y = GeneCount, fill = Module)) +
+  geom_bar(stat = "identity") +
+  theme_minimal(base_size = 15) +
+  labs(title = "Number of Genes in Each Module",
+       x = "Module",
+       y = "Number of Genes") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, color = "black", size = 12),
+    axis.text.y = element_text(color = "black", size = 12),
+    axis.title.x = element_text(face = "bold", size = 14),
+    axis.title.y = element_text(face = "bold", size = 14),
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    legend.position = "none",
+    panel.grid.major = element_line(color = "gray80"),
+    panel.grid.minor = element_line(color = "gray90"),
+    panel.border = element_rect(color = "black", fill = NA)
+  ) +
+  scale_fill_manual(values = scales::hue_pal()(length(unique(moduleCounts_df$Module))))
+ggsave("module_gene_counts_rat.pdf", width = 10, height = 6)
+
+
+# create plot of module-trait correlations
+moduleColors=mergedColors
+if(T){ 
+  nGenes = ncol(expr_normalized)  # 基因数目
+  nSamples = nrow(expr_normalized)  # 样本数目
+  MES0 <- moduleEigengenes(expr_normalized,moduleColors)$eigengenes  # 计算模块特征向量
+  MEs = orderMEs(MES0)  # 对模块特征向量排序
+  moduleTraitCor <- cor(MEs, Traits[[set]]$data, use = "p")  # 计算模块特征向量与表型的相关系数矩阵
+  moduleTraitPvalue <- corPvalueStudent(moduleTraitCor,nSamples)  # 计算相关系数矩阵的p值
+  textMatrix = paste(signif(moduleTraitCor,2),"\n(",
+                     signif(moduleTraitPvalue,1),")",sep = "")  # 构建绘图时用的文本矩阵
+  dim(textMatrix)=dim(moduleTraitCor)  # 修改文本矩阵的维度，与相关系数矩阵相同
+  
+  # Open a PNG file to save the plot
+  pdf("module-trait-relationships_rat.pdf", width = 15, height = 15)
+  par(mar = c(8, 10, 4, 2))  # 设置边距
+  labeledHeatmap(Matrix = moduleTraitCor,  # 绘制带标签的热图
+                 xLabels = names(Traits[[set]]$data),  # x轴标签
+                 yLabels =  names(MEs),  # y轴标签
+                 ySymbols = names(MEs),  # y轴符号
+                 colorLabels = FALSE,  # 不显示颜色标签
+                 colors = blueWhiteRed(50),  # 颜色范围
+                 textMatrix = textMatrix,  # 显示文本矩阵
+                 setStdMargins = FALSE,  # 不设置标准边距
+                 cex.text = 0.8,  # 文本大小
+                 zlim = c(-1,1),  # 颜色映射范围
+                 main = paste("Module-trait relationships:",species))  # 绘图标题
+  # Close the PNG file
+  dev.off()
+}
+```
+```{r}
+connectivity_rat <- softConnectivity(
+  expr_normalized, 
+  corFnc = "cor", corOptions = "use = 'p'", 
+  weights = NULL,
+  type = "signed",
+  power = 6)
+names(connectivity_rat) <- colnames(expr_normalized)
+save(connectivity_rat, file = "connectivity_rat.rdata")
+```
